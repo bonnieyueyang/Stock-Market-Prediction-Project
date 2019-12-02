@@ -1,0 +1,282 @@
+---
+title: "Stock Market Prediction Project - Advanced Dataset"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(ISLR)
+library(caTools)
+library(MASS)
+library(class)
+library(forecast)
+library(ggplot2)
+library(TTR)
+library(fpp2)
+library(zoo)
+```
+
+```{r}
+smp=read.csv("/Users/bonnie/Desktop/Smarketadvanced.csv", header=T, sep=',', 
+         na.strings="NA")
+attach(smp)
+dim(smp)
+```
+
+Our goal is to create insights and draw predictions for the percentage returns from the advanced stock market dataset over 801 months (66 years and 9 months) in the past, from January 1952 to September 2018. 
+
+For each month, we have recorded: 
+
+1. Direction: whether the market was Up or Down of this month 
+
+2. MktReturn: market percentage return of the month 
+
+3. X12m_cpi_forecast: CPI Forecast on a semi-annual basis
+
+4. X12m_real_gdp_forecast_calculated: calculated real GDP forecast on a semi-annual basis 
+
+5. X12m_unemployment_rate: unemployment rate on a semi-annual basis
+
+6. wti_prev_yoy_chg: WTI previous year-over-year change 
+
+7. PE_ratio_shiller: Shiller PE ratio for the S&P 500 
+
+8. corp_bond_yield_prev_month: corporate bond yield in previous month 
+
+9. MktReturn_prev_month: market return of the previous month from the date
+
+10. MktReturn_prev_yr: market return of the previous year from the date
+
+*Slide Notes on Financial Terminology:*
+
+* CPI (Customer Price Index): a measure that examines the weighted average of prices of a basket of consumer goods and services, such as transportation, food, and medical care)
+
+* Shiller PE ratio: a market valuation indicator, usually for S&P 500
+
+* WTI: Crude Oil Price 
+
+
+```{r}
+summary(smp)
+```
+
+
+Next, using a naive strategy, we can produce a matrix that contains all of the correlations between market return and all other predictors in the data set. 
+
+```{r}
+cor.mat=cor(smp[, -2])
+cor.mat[,1:2]
+```
+
+As we can see, the correlations between all the predictor variables and market montly returns are close to zero. Only the variables X12m_real_gdp_forecast_calculated, X12m_unemployment_rate, wti_prev_yoy_chg, PE_ratio_shiller, MktReturn_prev_month have correlations that is relatively larger and close to 0.1. 
+
+##### Logistic Regression
+Next, we want to predict Direction by fitting a logistic regression model using the predictor variables that have a relatively high correlation with the market return. 
+
+```{r}
+glm_fit=glm(Direction~X12m_real_gdp_forecast_calculated+X12m_unemployment_rate+wti_prev_yoy_chg+PE_ratio_shiller+MktReturn_prev_month, data=smp, family=binomial)
+summary(glm_fit)
+```
+Assume the threshold for small p-value is 0.05. Then, only the p-value of X12m_real_gdp_forecast_calculated suggests that there is a strong evidence showing there are some relationship between Direction and X12m_real_gdp_forecast_calculated. 
+
+Then, we can improve our model by reducing insignificant variables. 
+
+```{r}
+glm_fit=glm(Direction~ X12m_real_gdp_forecast_calculated, data=smp, family=binomial)
+summary(glm_fit)
+```
+
+```{r}
+glm.probs=predict(glm_fit,type='response')
+contrasts(Direction)
+glm.probs[1:10]
+max(glm.probs)
+min(glm.probs)
+```
+We then can get the predicted probability of the market going up from the logistic regression model. The range is between 48.22% and 75.76%.
+
+
+Next, we want to convert the above predicted probability to class label in order to make a prediction for the market direction going up or down on a particular day. So, we create a vector of class predictions based on whether the predicted probability of a market increase is greater than or less than 0.5. 
+
+```{r}
+glm.pred=rep("Down",801)
+glm.pred[glm.probs >.5]="Up"
+table(glm.pred,Direction) #confusion matrix
+```
+```{r}
+mean(glm.pred==Direction )
+```
+This logistic regression model correctly predicted the movement of the market 63.05 % of the time. However, the training error rate is 36.95%, which might be overly optimistic. 
+
+To better access the accuracy in this model, we split the data into a training set and a test set holding 30% of data for testing. 
+```{r}
+set.seed(101)
+sample = sample.split(1:nrow(smp), SplitRatio=0.3) 
+test = subset(smp, sample==TRUE)
+train = subset(smp, sample==FALSE)
+direction.test=test$Direction
+glm_fit=glm(Direction~X12m_real_gdp_forecast_calculated, data=train, family=binomial)
+summary(glm_fit)
+```
+```{r}
+glm.probs=predict(glm_fit,test, type='response')
+glm.pred=rep("Down",240)
+glm.pred[glm.probs >.5]="Up"
+table(glm.pred,direction.test)
+mean(glm.pred==direction.test)
+mean(glm.pred!=direction.test)
+152/(152+79)
+```
+In this improved model, we got a (slightly) better prediction rate of 63.75%, and we lowered the test set error rate to 36.25%. 
+
+The confusion matrix also shows that on days when logistic regression predicts an increase in the market, it hasa 65.8% accuracy rate. This suggests a possible trading strategy of buying on days when the model predict an up market, and avoid trades on days when a down is predicted. 
+
+
+##### LDA 
+```{r}
+lda.fit=lda(Direction~X12m_real_gdp_forecast_calculated, data=train)
+lda.fit
+plot(lda.fit) #Plot the linear discriminants for each training observation
+```
+The LDA output indicates that 38.3% of the training observations correspond to the months during which the market went down. 
+
+LDA decision rule: $\delta_k(x)=x^T\sum^{-1}\mu_k - \frac{1}{2}\mu_k^T\sum^{-1}\mu_k + log(\pi_k)$
+
+If 0.512 * X12m_real_gdp_forecast_calculated is large, then the LDA classifier will predict a market increase; and if it's small, then the LDA classifer will predict a market decline. 
+
+```{r}
+lda.pred=predict(lda.fit, test)
+lda.class=lda.pred$class
+table(lda.class, direction.test)
+mean(lda.class==direction.test)
+```
+The LDA and logistic regression predictions are almost the same. 
+
+Then applying a 50% threshold to the posterior probabilities to recreate the predictions contained in lda.class. 
+
+```{r}
+lda.pos=lda.pred$posterior
+sum(lda.pos[,1]>=.5)
+sum(lda.pos[,1]<.5)
+lda.pos[1:20,1] #posterior probability of a decreasing market 
+lda.class[1:20]
+sum(lda.pos[,1]>=.5651)
+```
+The greatest posterior probability of decrease in the test data was 56.51%. 
+???
+
+##### QDA
+
+```{r}
+qda.fit=qda(Direction~X12m_real_gdp_forecast_calculated, data=train)
+qda.fit
+```
+```{r}
+qda.class=predict(qda.fit,test)$class
+table(qda.class, direction.test)
+mean(qda.class==direction.test)
+```
+The QDA predictions are accurate 66.25% of the time, which has been improved a lot from all the other models. This suggests that the quadratic form assumed by QDA may be more accurate than the linear form assumed by LDA and logistic regression. 
+
+
+##### KNN
+```{r}
+train.gdp=cbind(train$X12m_real_gdp_forecast_calculated)
+test.gdp=cbind(test$X12m_real_gdp_forecast_calculated)
+train.dir=train$Direction
+```
+
+
+```{r}
+test.error.rate <- c()
+k_value=c(1,5,10,15,20,30,50,100,150,200) 
+for (i in k_value){
+knn_model=knn(train=train.gdp, test=test.gdp, cl= train.dir, k=i)
+test.error.rate=c(test.error.rate, mean(knn_model != direction.test)) 
+}
+test.error.rate
+```
+KNN performs best around K=5, which gives a 42.08% accuracy rate. 
+
+
+##### Time Series
+
+```{r}
+market_return=smp[,3]
+mr_ts=ts(market_return,frequency=12, start=c(1952,1))
+plot.ts(mr_ts)
+```
+Varing spread - the time series does not have constant variance. 
+Fail stationary criterion. 
+
+```{r}
+plot(aggregate(mr_ts,FUN=mean), ylab="yearly_market_return")
+# a year on year trend
+```
+
+
+```{r}
+bp=boxplot(mr_ts~cycle(mr_ts)) #seasonal effect
+```
+Inferences: 
+1. The year on year trend shows that there is a periodical change in the stock market index.
+2. The mean value in November and December is higher than the rest of the months. The variance in October is much higher than the rest. 
+3. The mean value in each month is quite similar and their variance is small. Hence, we have a seasonal effect with a cycle of 12 months or less. 
+
+```{r}
+ts_lag1=lag(mr_ts, lag=1)
+head(cbind(mr_ts, ts_lag1))
+ts_diff=diff(mr_ts, lag=1)
+tm=cbind(mr_ts, ts_diff)
+head(tm)
+plot.ts(tm) 
+```
+
+```{r}
+library(tseries)
+adf.test(ts_diff) 
+```
+By taking the difference, we make the non-stationary series stationary. 
+
+
+Plot ACF/PACF charts
+```{r}
+acf(ts_diff)
+```
+
+
+```{r}
+pacf(ts_diff)
+```
+
+```{r}
+autoArimaFit=auto.arima(ts_diff)
+plot(forecast(autoArimaFit, h=20))
+```
+
+
+```{r}
+arimaFit=Arima(ts_diff,order=c(3,1,0))
+plot(forecast(arimaFit,h=20))
+```
+
+```{r}
+tbatsFit=tbats(ts_diff, use.parallel=T, num.cores=2) # fit tbats model
+plot(forecast(tbatsFit)) # plot
+components <- tbats.components(tbatsFit)
+plot(components)
+```
+
+Confidence Interval for my Forecasts
+```{r}
+model=HoltWinters(ts_diff) 
+predict(model, 50, prediction.interval=T, level= 0.99)
+```
+
+
+
+
+
